@@ -34,5 +34,3 @@ To run this simulator, you need Python 3 and the following packages:
 4. **Simulate:** Click `Start Measurement`. The application will compute the 3D FFT and slice the Ewald spheres in parallel.
 5. **Review & Save:** Once complete, use `Replay Measurement` to review the generated frames, and use the save buttons to export your synthetic sinogram and motion log.
 
-## Note on Repository Limits
-Large `.mat` phantoms, generated sinograms, and `.csv` logs are excluded from this repository via `.gitignore` to comply with standard file size limits.
