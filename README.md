@@ -9,9 +9,9 @@ A standalone Python-based virtual laboratory designed to simulate Optical Diffra
   * **Galvo Scan:** Simulates illumination angle variations with a stationary object.
   * **Object Rotation Scan:** Simulates sample rotation explicitly around the Z-axis.
 * **Mechanical Imperfection Simulation:** * **Constant Kinematics:** Apply deterministic structural wobbles, such as X/Y radius deviations and Z-axis fall range during the scan.
-  * **Motion Noise:** Inject randomized translational (X, Y, Z) and rotational (Quaternion) noise to test the robustness of external reconstruction algorithms.
+  * **Motion Noise:** Inject randomized translational and rotational noise to test the robustness of external reconstruction algorithms.
 * **Accurate Forward Modeling:** * Implements rigorous Ewald sphere extraction in 3D K-space using `scipy.fft` and `scipy.ndimage.map_coordinates`.
-  * Dynamic toggle between Linear (fast) and Cubic (high quality) interpolation orders.
+  * Dynamic toggle between Linear and Cubic interpolation orders.
   * Parallelized projection generation using CPU multiprocessing to bypass the GIL and speed up heavy K-space slicing.
 * **Data Export:**
   * **MAT Export:** Saves the generated `SINOamp` and `SINOph` arrays alongside precise metadata (including automatically extracted background refractive index) to a MATLAB `.mat` file.
