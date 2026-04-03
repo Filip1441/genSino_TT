@@ -2,13 +2,24 @@ import numpy as np
 import random
 from PySide6.QtCore import QThread, Signal
 
-def generate_motion_sequence(num_projections, step_deg, is_galvo, azimuth, kinematics, noise):
+def generate_motion_sequence(num_projections, step_deg, is_galvo, illumination_angle, kinematics, noise):
     """
-    Generates a full timeline of transformations for the entire measurement.
-    This keeps the math out of the GUI and ensures the simulation and playback
-    are perfectly synchronized.
+    Generates a full timeline of transformations for the entire measurement
+    and calculates the K-space trajectory (rayXY) depending on the scan mode.
     """
     sequence = []
+    
+    # Precalculate K-space trajectory based on scan mode
+    radius = np.sin(np.radians(illumination_angle))
+    if is_galvo:
+        angles = np.linspace(0, 2 * np.pi, num_projections, endpoint=False)
+    else:
+        angles = np.zeros(num_projections)
+        
+    rayXY = np.zeros((2, num_projections))
+    rayXY[0, :] = radius * np.cos(angles)
+    rayXY[1, :] = radius * np.sin(angles)
+
     for j in range(num_projections):
         current_angle = j * step_deg
         base_angle_cw = -current_angle
@@ -42,7 +53,7 @@ def generate_motion_sequence(num_projections, step_deg, is_galvo, azimuth, kinem
             sim_theta = base_angle_cw
 
         sequence.append({
-            'beam_azimuth': azimuth,
+            'beam_illumination_angle': illumination_angle,
             'beam_rotation': beam_rot,
             'phantom_tx': p_tx,
             'phantom_ty': p_ty,
@@ -53,8 +64,7 @@ def generate_motion_sequence(num_projections, step_deg, is_galvo, azimuth, kinem
             'sim_theta_z': sim_theta
         })
         
-    return sequence
-
+    return sequence, rayXY
 
 class MeasurementWorker(QThread):
     """
@@ -80,7 +90,7 @@ class MeasurementWorker(QThread):
                 break
                 
             # Update 3D Viewer
-            self.update_beam_signal.emit(step_data['beam_azimuth'], step_data['beam_rotation'])
+            self.update_beam_signal.emit(step_data['beam_illumination_angle'], step_data['beam_rotation'])
             self.update_phantom_signal.emit(
                 step_data['phantom_tx'], step_data['phantom_ty'], step_data['phantom_tz'],
                 step_data['phantom_rx'], step_data['phantom_ry'], step_data['phantom_rz']

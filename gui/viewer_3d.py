@@ -57,21 +57,21 @@ class Viewer3D(QWidget):
         self.gl_view.addItem(self.beam_item)
         
         # Initialize default position
-        self.update_beam_transform(azimuth_deg=0.0, rotation_deg=0.0)
+        self.update_beam_transform(illumination_angle_deg=0.0, rotation_deg=0.0)
 
-    def update_beam_transform(self, azimuth_deg: float, rotation_deg: float):
+    def update_beam_transform(self, illumination_angle_deg: float, rotation_deg: float):
         """
-        Updates the beam spatial position based on azimuth and galvo scan rotation.
+        Updates the beam spatial position based on illumination_angle and galvo scan rotation.
         """
         self.beam_item.resetTransform()
         
         # 1. Center the cylinder so its middle is at (0,0,0) (half of 800 is 400)
         self.beam_item.translate(0, 0, -800)
         
-        # 2. Apply azimuth tilt (tilting towards X means rotating around Y)
-        self.beam_item.rotate(azimuth_deg, 0, 1, 0)
+        # 2. Apply illumination_angle tilt (tilting towards X means rotating around Y)
+        self.beam_item.rotate(illumination_angle_deg, 0, 1, 0)
         
-        # 3. Apply scan rotation around Z axis (creates a cone if azimuth > 0)
+        # 3. Apply scan rotation around Z axis (creates a cone if illumination_angle > 0)
         self.beam_item.rotate(rotation_deg, 0, 0, 1)
 
     def set_phantom_data(self, volume_data: np.ndarray):

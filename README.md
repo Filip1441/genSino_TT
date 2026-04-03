@@ -28,7 +28,7 @@ To run this simulator, you need Python 3 and the following packages:
 
 1. **Launch:** Run the main application script to open the graphical interface.
 2. **Load Phantom:** Click `Load phantom` to select your baseline 3D object in `.mat` format.
-3. **Set Parameters:** * Choose the scan mode, rotation step, and beam azimuth.
+3. **Set Parameters:** * Choose the scan mode, rotation step, and beam illumination_angle.
    * Toggle the required computational accuracy.
    * (Optional) Enable and tune kinematics and random motion noise.
 4. **Simulate:** Click `Start Measurement`. The application will compute the 3D FFT and slice the Ewald spheres in parallel.
