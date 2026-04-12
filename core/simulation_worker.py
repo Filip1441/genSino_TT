@@ -34,13 +34,15 @@ def _process_single_projection(j, step_data, kx_beam, ky_beam, kn,
         u = (np.arange(NKP) - NKP // 2) * dkP
         U, V = np.meshgrid(u, u, indexing='ij')
 
-        kz_beam = np.sqrt(max(0, kn**2 - kx_beam**2 - ky_beam**2))
+        kx0 = kn * kx_beam
+        ky0 = kn * ky_beam
+        kz_beam = np.sqrt(max(0, kn**2 - kx0**2 - ky0**2))
 
         tx, ty, tz = step_data['phantom_tx'], step_data['phantom_ty'], step_data['phantom_tz']
         rx, ry, rz = step_data['phantom_rx'], step_data['phantom_ry'], step_data['phantom_rz']
 
-        U_scat = U + kx_beam
-        V_scat = V + ky_beam
+        U_scat = U + kx0
+        V_scat = V + ky0
 
         term = kn**2 - U_scat**2 - V_scat**2
         kzz = np.zeros_like(U)
@@ -150,7 +152,7 @@ class SimulationWorker(QThread):
         NKo = int(2 + np.round(Bk / dko / 2.0) * 2) 
         dxu = np.float32(dxo * n_orig / NKo)
         
-        zpc = 2.0 
+        zpc = 1.0 
         NKP = int(np.round(NKo * zpc / 2.0) * 2)
         dkP = np.float32(1.0 / (dxu * NKP))
 
