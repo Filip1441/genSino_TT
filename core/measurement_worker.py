@@ -1,19 +1,39 @@
+"""
+Measurement and Motion Simulation Module
+----------------------------------------
+Handles the generation of scan trajectories and provides a worker for
+real-time playback of measurement results in the GUI.
+"""
+
 import numpy as np
 import random
 from PySide6.QtCore import QThread, Signal
 
-def generate_motion_sequence(num_projections, step_deg, is_galvo, illumination_angle, kinematics, noise):
+def generate_motion_sequence(num_projections: int, step_deg: float, is_galvo: bool, 
+                             illumination_angle: float, kinematics: dict, noise: dict):
     """
-    Generates a full timeline of transformations for the entire measurement
-    and calculates the K-space trajectory (rayXY) depending on the scan mode.
+    Generates a full sequence of beam and phantom transformations for the scan.
+    
+    Args:
+        num_projections: Total number of angular steps.
+        step_deg: Degrees between each projection.
+        is_galvo: True for LAT (Galvo) mode, False for TTLAT (Object Rotation).
+        illumination_angle: Base illumination angle in degrees.
+        kinematics: Dict of bools and values for deterministic wobbles (X, Y, Z).
+        noise: Dict of bools and values for randomized noise.
+        
+    Returns:
+        tuple: (List of step dictionaries, 2xN array of beam positions).
     """
     sequence = []
     
-    # Precalculate K-space trajectory based on scan mode
+    # Calculate beam offset in K-space coordinates
     radius = np.sin(np.radians(illumination_angle))
     if is_galvo:
+        # Beam sweeps a circle in LAT mode
         angles = np.linspace(0, 2 * np.pi, num_projections, endpoint=False)
     else:
+        # Beam is stationary relative to rotation in TTLAT mode
         angles = np.zeros(num_projections)
         
     rayXY = np.zeros((2, num_projections))
@@ -25,28 +45,28 @@ def generate_motion_sequence(num_projections, step_deg, is_galvo, illumination_a
         base_angle_cw = -current_angle
         rad_angle = np.radians(current_angle)
         
-        # 1. Kinematics
+        # Calculate deterministic kinematic offsets
         kx = kinematics['x'][1] * np.cos(rad_angle) if kinematics['x'][0] else 0.0
         ky = -kinematics['y'][1] * np.sin(rad_angle) if kinematics['y'][0] else 0.0
         kz = -kinematics['z'][1] * (current_angle / 360.0) if kinematics['z'][0] else 0.0
 
-        # 2. Translation Noise
+        # Calculate randomized motion noise
         nx = random.uniform(-noise['Translate X'][1], noise['Translate X'][1]) if noise['Translate X'][0] else 0.0
         ny = random.uniform(-noise['Translate Y'][1], noise['Translate Y'][1]) if noise['Translate Y'][0] else 0.0
         nz = random.uniform(-noise['Translate Z'][1], noise['Translate Z'][1]) if noise['Translate Z'][0] else 0.0
         
-        # 3. Rotation Noise
         nrx = random.uniform(-noise['Quaternion X'][1], noise['Quaternion X'][1]) if noise['Quaternion X'][0] else 0.0
         nry = random.uniform(-noise['Quaternion Y'][1], noise['Quaternion Y'][1]) if noise['Quaternion Y'][0] else 0.0
         nrz = random.uniform(-noise['Quaternion Z'][1], noise['Quaternion Z'][1]) if noise['Quaternion Z'][0] else 0.0
 
-        # 4. Mode Logic
         if is_galvo:
+            # LAT Mode: Beam rotates, phantom stays mostly stationary (except noise)
             beam_rot = base_angle_cw
             p_tx, p_ty, p_tz = kx + nx, ky + ny, kz + nz
             p_rx, p_ry, p_rz = nrx, nry, nrz
             sim_theta = 0.0
         else:
+            # TTLAT Mode: Beam stationary, phantom rotates around Z
             beam_rot = 0.0
             p_tx, p_ty, p_tz = kx + nx, ky + ny, kz + nz
             p_rx, p_ry, p_rz = nrx, nry, base_angle_cw + nrz
@@ -68,7 +88,8 @@ def generate_motion_sequence(num_projections, step_deg, is_galvo, illumination_a
 
 class MeasurementWorker(QThread):
     """
-    Playback worker. Takes precalculated data and plays it smoothly.
+    Worker for emulating the hardware measurement process.
+    Iterates through the motion sequence and emits signals for UI updates.
     """
     update_beam_signal = Signal(float, float)
     update_phantom_signal = Signal(float, float, float, float, float, float)
@@ -82,25 +103,23 @@ class MeasurementWorker(QThread):
         self.is_running = True
 
     def run(self):
-        """
-        Iterates over the precalculated frames and updates all GUI elements simultaneously.
-        """
+        """Standard playback loop."""
         for j, step_data in enumerate(self.motion_sequence):
             if not self.is_running:
                 break
                 
-            # Update 3D Viewer
+            # Update the 3D viewer
             self.update_beam_signal.emit(step_data['beam_illumination_angle'], step_data['beam_rotation'])
             self.update_phantom_signal.emit(
                 step_data['phantom_tx'], step_data['phantom_ty'], step_data['phantom_tz'],
                 step_data['phantom_rx'], step_data['phantom_ry'], step_data['phantom_rz']
             )
-            
-            # Update 2D Live Images
-            self.update_images_signal.emit(self.sino_amp[:, :, j], self.sino_ph[:, :, j])
-            
-            # Playback speed (approx 20 FPS)
-            self.msleep(50)
+            # Update the 2D projection displays
+            if self.sino_amp is not None and self.sino_ph is not None:
+                self.update_images_signal.emit(self.sino_amp[:, :, j], self.sino_ph[:, :, j])
+                
+            self.msleep(50) # frame rate
             
     def stop(self):
+        """Safely stops the playback loop."""
         self.is_running = False

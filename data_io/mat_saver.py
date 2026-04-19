@@ -1,14 +1,28 @@
+"""
+MATLAB File Export Utility
+--------------------------
+Handles the storage of generated synthetic sinograms and 
+associated beam geometry into .mat files.
+"""
+
 import scipy.io as sio
 import numpy as np
 
-def save_sinogram_mat(output_path, sino_amp, sino_ph, rayXY, metadata):
+def save_sinogram_mat(output_path: str, sino_amp: np.ndarray, 
+                      sino_ph: np.ndarray, rayXY: np.ndarray, metadata: dict):
     """
-    Saves the generated sinogram data and metadata into a MATLAB .mat file.
-    Uses the centralized metadata dictionary provided by the main window.
+    Saves sinogram data and metadata to a MATLAB-compatible .mat file.
+    
+    Args:
+        output_path: Target .mat file path.
+        sino_amp: 3D array of amplitude projections.
+        sino_ph: 3D array of phase projections (unwrapped).
+        rayXY: 2xN array of beam illumination positions.
+        metadata: Dictionary containing physical/optical experiment parameters.
     """
-    # Create a local copy to avoid modifying the original dictionary in the GUI
     save_dict = metadata.copy()
     
+    # Add simulation results to the dictionary
     save_dict['SINOamp'] = sino_amp.astype(np.float32)
     save_dict['SINOph'] = sino_ph.astype(np.float32)
     save_dict['rayXY'] = rayXY.astype(np.float64)

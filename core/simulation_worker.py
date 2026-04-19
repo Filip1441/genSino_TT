@@ -1,4 +1,11 @@
-import os
+"""
+Holographic Tomography Simulation Engine
+----------------------------------------
+The core of the "Virtual Lab". Implements a wave-optics forward model based on 
+the Rytov/Born approximation. It computes the 3D potential of a phantom and 
+extracts slices from the Ewald sphere in parallel using multiprocessing.
+"""
+
 import numpy as np
 import concurrent.futures
 import multiprocessing
@@ -7,8 +14,26 @@ from scipy.fft import fftn, fftshift, ifft2, ifftshift, fft2, ifftn
 from scipy.ndimage import map_coordinates
 from skimage.restoration import unwrap_phase
 from PySide6.QtCore import QThread, Signal
+from core.utils import get_rotation_matrix
 
-def _center_crop_pad(arr, target_size):
+# Default physical and optical parameters for the simulation
+DEFAULT_METADATA = {
+    'M': 48.41,                # Magnification
+    'NA': 1.3,                 # Numerical Aperture
+    'cam_pix': 3.45,           # Camera pixel size (um)
+    'do_NNC': 1,               # Normalized coordinate correction toggle
+    'downsampling': 3.2889,    # Resampling factor
+    'dx': 0.234375,            # Voxel size (um)
+    'fpm': 0,                  # Fourier phase mask
+    'geometry': 'fixed',       # System geometry
+    'lambda': 0.6328,          # Wavelength (um)
+    'n_immersion': 1.5123,     # Refractive index of immersion medium
+    'obj_type': 'tech',        # Phantom type
+    'omit_reference': 0        # Reference wave toggle
+}
+
+def _center_crop_pad(arr: np.ndarray, target_size: int) -> np.ndarray:
+    """Helper to crop or pad an array from/to its center."""
     curr_size = arr.shape[0]
     if curr_size == target_size:
         return arr
@@ -22,18 +47,27 @@ def _center_crop_pad(arr, target_size):
     return res
 
 def _process_single_projection(j, step_data, kx_beam, ky_beam, kn, 
-                               NKP, dkP, Nx, dx_crop, dk_crop, n_orig, 
-                               approx_mode, interp_order, shm_real_name, shm_imag_name, ko_shape):
+                                NKP, dkP, Nx, dx_crop, dk_crop, n_orig, 
+                                approx_mode, interp_order, shm_real_name, shm_imag_name, ko_shape):
+    """
+    Subprocess function to generate a single projection.
+    Extracts a 2D Ewald sphere slice from the 3D scattered potential.
+    Uses shared memory for efficient access to the massive 3D volume.
+    """
     
+    # Access the shared memory segments
     shm_real = shared_memory.SharedMemory(name=shm_real_name)
     shm_imag = shared_memory.SharedMemory(name=shm_imag_name)
     try:
+        # Wrap shared buffers as numpy arrays
         KO_real = np.ndarray(ko_shape, dtype=np.float32, buffer=shm_real.buf)
         KO_imag = np.ndarray(ko_shape, dtype=np.float32, buffer=shm_imag.buf)
 
+        # Coordinate grid in K-space
         u = (np.arange(NKP) - NKP // 2) * dkP
         U, V = np.meshgrid(u, u, indexing='ij')
 
+        # Wave vector calculation
         kx0 = kn * kx_beam
         ky0 = kn * ky_beam
         kz_beam = np.sqrt(max(0, kn**2 - kx0**2 - ky0**2))
@@ -44,45 +78,42 @@ def _process_single_projection(j, step_data, kx_beam, ky_beam, kn,
         U_scat = U + kx0
         V_scat = V + ky0
 
+        # Ewald sphere surface calculation
         term = kn**2 - U_scat**2 - V_scat**2
         kzz = np.zeros_like(U)
         valid_mask = term >= 0
         kzz[valid_mask] = np.sqrt(term[valid_mask])
 
-        domain = kzz > (4 * dkP)
+        domain = kzz > (4 * dkP) # Bandwidth limitation
         W = np.zeros_like(U)
         W[domain] = kzz[domain] - kz_beam
 
-        rad_x, rad_y, rad_z = np.radians(-rx), np.radians(-ry), np.radians(-rz)
-        cx, sx = np.cos(rad_x), np.sin(rad_x)
-        cy, sy = np.cos(rad_y), np.sin(rad_y)
-        cz, sz = np.cos(rad_z), np.sin(rad_z)
-
-        Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
-        Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
-        Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
-        R = Rz @ Ry @ Rx
-
+        # Apply 3D rotation to the extraction coordinates
+        R = get_rotation_matrix(-rx, -ry, -rz)
         coords_3d = np.vstack((U.ravel(), V.ravel(), W.ravel()))
         rotated_coords = R @ coords_3d
         coords_indices = (rotated_coords / dkP) + (NKP // 2)
 
-        Fp_r = map_coordinates(KO_real, coords_indices, order=interp_order, prefilter=False).reshape(NKP, NKP)
-        Fp_i = map_coordinates(KO_imag, coords_indices, order=interp_order, prefilter=False).reshape(NKP, NKP)
+        # Interpolate from the 3D potential
+        Fp_r = map_coordinates(KO_real, coords_indices, order=interp_order, prefilter=(interp_order > 1)).reshape(NKP, NKP)
+        Fp_i = map_coordinates(KO_imag, coords_indices, order=interp_order, prefilter=(interp_order > 1)).reshape(NKP, NKP)
         Fp = (Fp_r + 1j * Fp_i)
         Fp[~domain] = 0
 
+        # Apply shifts (translations)
         if tx != 0 or ty != 0 or tz != 0:
             Fp *= np.exp(-1j * 2 * np.pi * (U * tx + V * ty + W * tz))
 
+        # Scattered field normalization
         Fp_norm = np.zeros_like(Fp)
         Fp_norm[domain] = Fp[domain] / (1j * 4 * np.pi * kzz[domain])
 
+        # Inverse Fourier to real space (projection plane)
         Up = fftshift(ifft2(ifftshift(Fp_norm))) / (dx_crop**2)
 
+        # Crop and center-align the optical field
         pad_drop = (NKP - Nx) // 2
         Up_crop = Up[pad_drop : pad_drop+Nx, pad_drop : pad_drop+Nx]
-
         Fp_crop = fftshift(fft2(ifftshift(Up_crop))) * (dx_crop**2)
         
         shift_x = int(np.round(kx_beam / dk_crop))
@@ -95,6 +126,7 @@ def _process_single_projection(j, step_data, kx_beam, ky_beam, kn,
         dxp = 1.0 / (dk_crop * n_orig)
         Up_final = fftshift(ifft2(ifftshift(Fp_final))) / (dxp**2)
 
+        # Apply approximation model (Rytov or Born)
         if approx_mode == 'Rytov':
             amp = np.exp(Up_final.real)
             ph = unwrap_phase(Up_final.imag)
@@ -106,25 +138,40 @@ def _process_single_projection(j, step_data, kx_beam, ky_beam, kn,
         return j, amp.astype(np.float32), ph.astype(np.float32)
 
     finally:
+        # Avoid resource leaks by closing shm handles
         shm_real.close()
         shm_imag.close()
 
 
 class SimulationWorker(QThread):
+    """
+    Main background worker for the high-performance HT simulation.
+    Handles the 3D potential calculation and orchestrates the parallel projection generation.
+    """
     progress_updated = Signal(int)
-    finished_signal = Signal(np.ndarray, np.ndarray)
+    error_signal = Signal(str)
+    finished_signal = Signal(np.ndarray, np.ndarray, dict)
 
-    def __init__(self, phantom, metadata, rayXY, motion_sequence, approx_mode='Rytov', interp_order=1):
+    def __init__(self, phantom, rayXY, motion_sequence, metadata=None, approx_mode='Rytov', interp_order=1):
         super().__init__()
         self.phantom = phantom.astype(np.complex64)
-        self.metadata = metadata
         self.rayXY = rayXY
         self.motion_sequence = motion_sequence
         self.approx_mode = approx_mode
         self.interp_order = interp_order
         self.is_running = True
+        
+        # Load and update metadata
+        self.metadata = DEFAULT_METADATA.copy()
+        if metadata:
+            self.metadata.update(metadata)
+        
+        # Automatic background index extraction if not specified
+        if self.metadata['n_immersion'] is None or self.metadata['n_immersion'] == 1.5123:
+            self.metadata['n_immersion'] = float(np.real(self.phantom[0, 0, 0]))
 
-    def _get_spherical_mask_3d(self, n):
+    def _get_spherical_mask_3d(self, n: int) -> np.ndarray:
+        """Generates a smooth spherical window to prevent Fourier artifacts at boundaries."""
         z, y, x = np.ogrid[-n/2:n/2, -n/2:n/2, -n/2:n/2]
         r = np.sqrt(x**2 + y**2 + z**2)
         max_r = n / 2.0
@@ -138,7 +185,7 @@ class SimulationWorker(QThread):
         return mask
 
     def run(self):
-        # Force strict 32-bit floats to prevent 2x RAM explosions
+        """Orchestrates the massive 3D FFT and the parallel extraction loop."""
         n_orig = self.phantom.shape[0]
         dxo = np.float32(self.metadata['dx'])
         lam = np.float32(self.metadata['lambda'])
@@ -146,6 +193,7 @@ class SimulationWorker(QThread):
         kn = n_imm / lam
         dko = np.float32(1.0 / (dxo * n_orig))
 
+        # Fourier space padding for sufficient sampling
         Bk0 = 2 * kn
         k0_max = np.max(np.abs(self.rayXY))
         Bk = Bk0 + 2 * k0_max
@@ -158,24 +206,24 @@ class SimulationWorker(QThread):
 
         fft_cores = multiprocessing.cpu_count()
 
+        # Step 1: Calculate the scattered potential (f = k0^2 * (1 - n^2/n_imm^2))
         k_factor = np.float32((2 * np.pi * kn) ** 2)
         phantom_sq = self.phantom ** 2
         n_imm_sq = np.float32(n_imm ** 2)
         
         potential_orig = k_factor * (np.float32(1.0) - (phantom_sq / n_imm_sq))
         potential_orig = potential_orig.astype(np.complex64)
-        del phantom_sq # Aggressive memory clearing
+        del phantom_sq 
 
+        # Apply spherical window
         mask_3d = self._get_spherical_mask_3d(n_orig)
         potential_orig *= mask_3d
         del mask_3d
 
-        # -------------------------------------------------------------
-        # RAM-Optimized Fourier Resampling 
-        # -------------------------------------------------------------
+        # Step 2: 3D FFT to K-space and resampling to padded grid
         potential_orig = ifftshift(potential_orig)
         tmp_KO = fftn(potential_orig, workers=fft_cores)
-        del potential_orig # Clear before allocating padding
+        del potential_orig 
         
         tmp_KO = fftshift(tmp_KO)
         pad_resample = (NKo - n_orig) // 2
@@ -184,7 +232,6 @@ class SimulationWorker(QThread):
                          (pad_resample, pad_resample), 
                          (pad_resample, pad_resample)), mode='constant', constant_values=0)
         
-        # Scaling after Fourier padding is required to preserve physical amplitude
         scale_factor = np.float32((NKo / n_orig) ** 3)
         tmp_KO *= scale_factor
         
@@ -194,6 +241,7 @@ class SimulationWorker(QThread):
 
         potential_resampled = fftshift(potential_resampled).astype(np.complex64)
         
+        # Step 3: Final padding for Ewald sphere resolution
         pad_width = (NKP - NKo) // 2
         potential_padded = np.pad(potential_resampled, 
                                   ((pad_width, pad_width), 
@@ -201,15 +249,14 @@ class SimulationWorker(QThread):
                                    (pad_width, pad_width)), mode='constant', constant_values=0)
         del potential_resampled
 
-        # Final K-Space Generation
         potential_padded = ifftshift(potential_padded)
         KO = fftn(potential_padded, workers=fft_cores)
         del potential_padded
         
         KO = fftshift(KO)
-        KO *= np.float32(dxu ** 3)
+        KO *= np.float32(dxu ** 3) # Final potential in K-space
         
-        # Prevent Worker Memory Duplication: Strictly slice real and imaginary floats!
+        # Prepare for shared memory (reduce GIL impact)
         KO_real = np.ascontiguousarray(KO.real, dtype=np.float32)
         KO_imag = np.ascontiguousarray(KO.imag, dtype=np.float32)
         del KO
@@ -222,19 +269,21 @@ class SimulationWorker(QThread):
         SINOamp = np.zeros((n_orig, n_orig, num_projections), dtype=np.float32)
         SINOph = np.zeros((n_orig, n_orig, num_projections), dtype=np.float32)
 
+        # Allocate shared memory
         shm_real = shared_memory.SharedMemory(create=True, size=KO_real.nbytes)
         shm_imag = shared_memory.SharedMemory(create=True, size=KO_imag.nbytes)
         
         try:
+            # Copy data into shared memory
             KO_real_shared = np.ndarray(KO_real.shape, dtype=KO_real.dtype, buffer=shm_real.buf)
             KO_imag_shared = np.ndarray(KO_imag.shape, dtype=KO_imag.dtype, buffer=shm_imag.buf)
             np.copyto(KO_real_shared, KO_real)
             np.copyto(KO_imag_shared, KO_imag)
 
-            del KO_real, KO_imag # Final local cleanup
+            del KO_real, KO_imag 
 
+            # Step 4: Parallel extraction of projections using a ProcessPoolExecutor
             num_workers = min(max(1, fft_cores - 2), 16)
-
             completed = 0
             with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
                 futures = {}
@@ -250,6 +299,7 @@ class SimulationWorker(QThread):
                     )
                     futures[future] = j
 
+                # Monitoring the loop and updating the UI progress
                 for future in concurrent.futures.as_completed(futures):
                     if not self.is_running:
                         executor.shutdown(wait=False)
@@ -264,12 +314,13 @@ class SimulationWorker(QThread):
                         progress = int((completed / num_projections) * 100)
                         self.progress_updated.emit(progress)
                     except Exception as exc:
-                        print(f"Projection generated an exception: {exc}")
+                        self.error_signal.emit(f"Projection error: {exc}")
 
             if self.is_running:
-                self.finished_signal.emit(SINOamp, SINOph)
+                self.finished_signal.emit(SINOamp, SINOph, self.metadata)
 
         finally:
+            # Cleanup shared memory
             shm_real.close()
             shm_imag.close()
             try:
@@ -279,4 +330,5 @@ class SimulationWorker(QThread):
                 pass
 
     def stop(self):
+        """Stops the calculation process."""
         self.is_running = False
