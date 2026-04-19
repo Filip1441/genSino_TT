@@ -55,9 +55,9 @@ def generate_motion_sequence(num_projections: int, step_deg: float, is_galvo: bo
         ny = random.uniform(-noise['Translate Y'][1], noise['Translate Y'][1]) if noise['Translate Y'][0] else 0.0
         nz = random.uniform(-noise['Translate Z'][1], noise['Translate Z'][1]) if noise['Translate Z'][0] else 0.0
         
-        nrx = random.uniform(-noise['Quaternion X'][1], noise['Quaternion X'][1]) if noise['Quaternion X'][0] else 0.0
-        nry = random.uniform(-noise['Quaternion Y'][1], noise['Quaternion Y'][1]) if noise['Quaternion Y'][0] else 0.0
-        nrz = random.uniform(-noise['Quaternion Z'][1], noise['Quaternion Z'][1]) if noise['Quaternion Z'][0] else 0.0
+        nrx = random.uniform(-noise['Rotation X'][1], noise['Rotation X'][1]) if noise['Rotation X'][0] else 0.0
+        nry = random.uniform(-noise['Rotation Y'][1], noise['Rotation Y'][1]) if noise['Rotation Y'][0] else 0.0
+        nrz = random.uniform(-noise['Rotation Z'][1], noise['Rotation Z'][1]) if noise['Rotation Z'][0] else 0.0
 
         if is_galvo:
             # LAT Mode: Beam rotates, phantom stays mostly stationary (except noise)

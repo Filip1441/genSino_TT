@@ -169,7 +169,7 @@ class MainWindow(QMainWindow):
         self.group_noise = QGroupBox("Motion Noise")
         noise_layout = QGridLayout()
         noise_rows = [("Translate X", 0.5), ("Translate Y", 0.5), ("Translate Z", 0.5),
-                      ("Quaternion X", 0.25), ("Quaternion Y", 0.25), ("Quaternion Z", 0.25)]
+                      ("Rotation X", 0.25), ("Rotation Y", 0.25), ("Rotation Z", 0.25)]
         self.noise_controls = {}
         for row_idx, (name, def_val) in enumerate(noise_rows):
             cb = QCheckBox(name)
