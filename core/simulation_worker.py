@@ -20,14 +20,14 @@ from core.utils import get_rotation_matrix
 DEFAULT_METADATA = {
     'M': 48.41,                # Magnification
     'NA': 1.3,                 # Numerical Aperture
-    'cam_pix': 3.45,           # Camera pixel size (um)
-    'do_NNC': 1,               # Normalized coordinate correction toggle
+    'cam_pix': 3.45,           # Camera pixel size 
+    'do_NNC': 1,               # Non Negativity constraint
     'downsampling': 3.2889,    # Resampling factor
     'dx': 0.234375,            # Voxel size (um)
     'fpm': 0,                  # Fourier phase mask
     'geometry': 'fixed',       # System geometry
-    'lambda': 0.6328,          # Wavelength (um)
-    'n_immersion': 1.5123,     # Refractive index of immersion medium
+    'lambda': 0.6328,          # Wavelength 
+    'n_immersion': 1.33,       # Refractive index of immersion medium
     'obj_type': 'tech',        # Phantom type
     'omit_reference': 0        # Reference wave toggle
 }
@@ -52,7 +52,6 @@ def _process_single_projection(j, step_data, kx_beam, ky_beam, kn,
     """
     Subprocess function to generate a single projection.
     Extracts a 2D Ewald sphere slice from the 3D scattered potential.
-    Uses shared memory for efficient access to the massive 3D volume.
     """
     
     # Access the shared memory segments
@@ -94,9 +93,9 @@ def _process_single_projection(j, step_data, kx_beam, ky_beam, kn,
         rotated_coords = R @ coords_3d
         coords_indices = (rotated_coords / dkP) + (NKP // 2)
 
-        # Interpolate from the 3D potential
-        Fp_r = map_coordinates(KO_real, coords_indices, order=interp_order, prefilter=(interp_order > 1)).reshape(NKP, NKP)
-        Fp_i = map_coordinates(KO_imag, coords_indices, order=interp_order, prefilter=(interp_order > 1)).reshape(NKP, NKP)
+        # Interpolate from the 3D potential (prefilter=False because we do it once in the main thread)
+        Fp_r = map_coordinates(KO_real, coords_indices, order=interp_order, prefilter=False).reshape(NKP, NKP)
+        Fp_i = map_coordinates(KO_imag, coords_indices, order=interp_order, prefilter=False).reshape(NKP, NKP)
         Fp = (Fp_r + 1j * Fp_i)
         Fp[~domain] = 0
 
@@ -200,7 +199,7 @@ class SimulationWorker(QThread):
         NKo = int(2 + np.round(Bk / dko / 2.0) * 2) 
         dxu = np.float32(dxo * n_orig / NKo)
         
-        zpc = 1.0 
+        zpc = 1
         NKP = int(np.round(NKo * zpc / 2.0) * 2)
         dkP = np.float32(1.0 / (dxu * NKP))
 
@@ -227,26 +226,25 @@ class SimulationWorker(QThread):
         
         tmp_KO = fftshift(tmp_KO)
         pad_resample = (NKo - n_orig) // 2
-        tmp_KO = np.pad(tmp_KO, 
-                        ((pad_resample, pad_resample), 
-                         (pad_resample, pad_resample), 
-                         (pad_resample, pad_resample)), mode='constant', constant_values=0)
+        
+        # Use pre-allocation instead of np.pad for better memory management
+        tmp_padded = np.zeros((NKo, NKo, NKo), dtype=tmp_KO.dtype)
+        tmp_padded[pad_resample:pad_resample+n_orig, pad_resample:pad_resample+n_orig, pad_resample:pad_resample+n_orig] = tmp_KO
+        del tmp_KO
         
         scale_factor = np.float32((NKo / n_orig) ** 3)
-        tmp_KO *= scale_factor
+        tmp_padded *= scale_factor
         
-        tmp_KO = ifftshift(tmp_KO)
-        potential_resampled = ifftn(tmp_KO, workers=fft_cores)
-        del tmp_KO 
+        tmp_padded = ifftshift(tmp_padded)
+        potential_resampled = ifftn(tmp_padded, workers=fft_cores)
+        del tmp_padded 
 
         potential_resampled = fftshift(potential_resampled).astype(np.complex64)
         
-        # Step 3: Final padding for Ewald sphere resolution
+        # Step 3: Final padding for Ewald sphere resolution - use pre-allocated zeros to avoid multiple copies
         pad_width = (NKP - NKo) // 2
-        potential_padded = np.pad(potential_resampled, 
-                                  ((pad_width, pad_width), 
-                                   (pad_width, pad_width), 
-                                   (pad_width, pad_width)), mode='constant', constant_values=0)
+        potential_padded = np.zeros((NKP, NKP, NKP), dtype=np.complex64)
+        potential_padded[pad_width:pad_width+NKo, pad_width:pad_width+NKo, pad_width:pad_width+NKo] = potential_resampled
         del potential_resampled
 
         potential_padded = ifftshift(potential_padded)
@@ -256,32 +254,45 @@ class SimulationWorker(QThread):
         KO = fftshift(KO)
         KO *= np.float32(dxu ** 3) # Final potential in K-space
         
-        # Prepare for shared memory (reduce GIL impact)
-        KO_real = np.ascontiguousarray(KO.real, dtype=np.float32)
-        KO_imag = np.ascontiguousarray(KO.imag, dtype=np.float32)
-        del KO
-
-        Nx = int(np.round(NKP * dkP / dko / 2.0) * 2)
-        dx_crop = np.float32(1.0 / (dkP * NKP))
-        dk_crop = np.float32(1.0 / (dx_crop * Nx))
-
-        num_projections = len(self.motion_sequence)
-        SINOamp = np.zeros((n_orig, n_orig, num_projections), dtype=np.float32)
-        SINOph = np.zeros((n_orig, n_orig, num_projections), dtype=np.float32)
-
-        # Allocate shared memory
-        shm_real = shared_memory.SharedMemory(create=True, size=KO_real.nbytes)
-        shm_imag = shared_memory.SharedMemory(create=True, size=KO_imag.nbytes)
+        # Prepare for shared memory (OPTIMIZED: avoid intermediate contiguous float32 copies)
+        shm_size = KO.nbytes // 2
+        shm_real = shared_memory.SharedMemory(create=True, size=shm_size)
+        shm_imag = shared_memory.SharedMemory(create=True, size=shm_size)
         
         try:
-            # Copy data into shared memory
-            KO_real_shared = np.ndarray(KO_real.shape, dtype=KO_real.dtype, buffer=shm_real.buf)
-            KO_imag_shared = np.ndarray(KO_imag.shape, dtype=KO_imag.dtype, buffer=shm_imag.buf)
-            np.copyto(KO_real_shared, KO_real)
-            np.copyto(KO_imag_shared, KO_imag)
+            # Wrap shared buffers as numpy arrays
+            KO_real_shared = np.ndarray(KO.shape, dtype=np.float32, buffer=shm_real.buf)
+            KO_imag_shared = np.ndarray(KO.shape, dtype=np.float32, buffer=shm_imag.buf)
+            
+            # Prefilter for cubic interpolation once here, so workers don't have to do it (prevents RAM explosion)
+            if self.interp_order > 1:
+                from scipy.ndimage import spline_filter
+                # Process real part
+                coeffs = spline_filter(KO.real, order=self.interp_order, output=np.float32)
+                np.copyto(KO_real_shared, coeffs)
+                del coeffs
+                # Process imag part
+                coeffs = spline_filter(KO.imag, order=self.interp_order, output=np.float32)
+                np.copyto(KO_imag_shared, coeffs)
+                del coeffs
+            else:
+                # Directly copy from complex64 views (KO.real/imag) into shared memory buffers.
+                # This is much more memory efficient than using np.ascontiguousarray first.
+                np.copyto(KO_real_shared, KO.real)
+                np.copyto(KO_imag_shared, KO.imag)
 
-            del KO_real, KO_imag 
+            # Record shape then delete the massive complex array
+            ko_shape_actual = KO.shape
+            del KO
 
+            # Allocate sinogram storage AFTER freeing the big volume
+            num_projections = len(self.motion_sequence)
+            SINOamp = np.zeros((n_orig, n_orig, num_projections), dtype=np.float32)
+            SINOph = np.zeros((n_orig, n_orig, num_projections), dtype=np.float32)
+
+            Nx = int(np.round(NKP * dkP / dko / 2.0) * 2)
+            dx_crop = np.float32(1.0 / (dkP * NKP))
+            dk_crop = np.float32(1.0 / (dx_crop * Nx))
             # Step 4: Parallel extraction of projections using a ProcessPoolExecutor
             num_workers = min(max(1, fft_cores - 2), 16)
             completed = 0

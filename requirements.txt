@@ -4,3 +4,5 @@ PySide6>=6.9.0
 pyqtgraph>=0.13.7
 scikit-image>=0.22.0
 h5py>=3.13.0
+PyOpenGL
+PyOpenGL_accelerate
