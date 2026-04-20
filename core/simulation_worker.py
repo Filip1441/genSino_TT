@@ -165,9 +165,8 @@ class SimulationWorker(QThread):
         if metadata:
             self.metadata.update(metadata)
         
-        # Automatic background index extraction if not specified
-        if self.metadata['n_immersion'] is None or self.metadata['n_immersion'] == 1.5123:
-            self.metadata['n_immersion'] = float(np.real(self.phantom[0, 0, 0]))
+        # Automatic background index extraction from the phantom's corner voxel
+        self.metadata['n_immersion'] = float(np.real(self.phantom[0, 0, 0]))
 
     def _get_spherical_mask_3d(self, n: int) -> np.ndarray:
         """Generates a smooth spherical window to prevent Fourier artifacts at boundaries."""
